@@ -26,6 +26,6 @@ func uuid() []byte {
 	return b
 }
 
-func UuitTostr(b []byte) string {
+func UuidToStr(b []byte) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:])
 }

@@ -1,8 +1,10 @@
 package message
 
 import (
+	"errors"
 	"gmq/util"
 	"log"
+	"time"
 )
 
 /*
@@ -15,14 +17,23 @@ type Consumer interface {
 }
 
 type Channel struct {
-	name                string
-	addClientChan       chan util.ChanReq
-	removeClientChan    chan util.ChanReq
-	clients             []Consumer
+	name string
+
+	addClientChan    chan util.ChanReq
+	removeClientChan chan util.ChanReq
+	clients          []Consumer
+
 	incomingMessageChan chan *Message
 	msgChan             chan *Message
 	clientMessageChan   chan *Message
-	exitChan            chan util.ChanReq
+
+	exitChan chan util.ChanReq
+
+	inFlightMessageChan chan *Message
+	inFlightMessages    map[string]*Message
+	finishMessageChan   chan util.ChanReq
+
+	requeueMessageChan chan util.ChanReq
 }
 
 func (c *Channel) Close() error {
@@ -74,6 +85,89 @@ func (c *Channel) PullMessage() *Message {
 	return <-c.incomingMessageChan
 }
 
+/*
+At least once 机制
+*/
+func (c *Channel) pushInFlightMessage(msg *Message) {
+	c.inFlightMessages[util.UuidToStr(msg.Uuid())] = msg
+}
+
+func (c *Channel) popInFlightMessage(uuidStr string) (*Message, error) {
+	msg, ok := c.inFlightMessages[uuidStr]
+	if !ok {
+		return nil, errors.New("UUID not in flight")
+	}
+	delete(c.inFlightMessages, uuidStr)
+	//消息结束，停止重传计时器
+	msg.EndTimer()
+	return msg, nil
+}
+
+func (c *Channel) FinishMessage(uuidStr string) error {
+	errChan := make(chan interface{})
+	c.finishMessageChan <- util.ChanReq{
+		Variable: uuidStr,
+		RetChan:  errChan,
+	}
+	err, _ := (<-errChan).(error)
+	return err
+}
+
+/*
+重新入队
+*/
+func (c *Channel) RequeueMessage(uuidStr string) error {
+	errChan := make(chan interface{})
+	c.requeueMessageChan <- util.ChanReq{
+		Variable: uuidStr,
+		RetChan:  errChan,
+	}
+	err, _ := (<-errChan).(error)
+	return err
+}
+
+// 负责监听 确认通道 和 重传通道
+func (c *Channel) RequeueRouter(closeChan chan struct{}) {
+	for {
+		select {
+
+		case msg := <-c.inFlightMessageChan:
+			c.pushInFlightMessage(msg)
+			go func(msg *Message) {
+				select {
+				case <-time.After(60 * time.Second):
+					log.Printf("CHANNEL(%s): auto requeue of message(%s)", c.name, util.UuidToStr(msg.Uuid()))
+				case <-msg.finishChan:
+					return
+				}
+			}(msg)
+
+		case finishReq := <-c.finishMessageChan:
+			uuidStr := finishReq.Variable.(string)
+			_, err := c.popInFlightMessage(uuidStr)
+			if err != nil {
+				log.Printf("ERROR:failed to finish message(%s) - %s", uuidStr, err.Error())
+			}
+			finishReq.RetChan <- err
+
+		case requeueReq := <-c.requeueMessageChan:
+			uuidStr := requeueReq.Variable.(string)
+			msg, err := c.popInFlightMessage(uuidStr)
+			if err != nil {
+				log.Printf("ERROR:failed to requeue message(%s) - %s", uuidStr, err.Error())
+			} else {
+				go func(msg *Message) {
+					c.PutMessage(msg)
+				}(msg)
+			}
+			requeueReq.RetChan <- err
+
+		case <-closeChan:
+			return
+		}
+	}
+}
+
 func (c *Channel) Router() {
 	//用于监听client队列
 	var clientReq util.ChanReq
@@ -81,7 +175,7 @@ func (c *Channel) Router() {
 	//用于关闭MessagePump
 	var closeChan = make(chan struct{})
 	go c.MessagePump(closeChan)
-
+	go c.RequeueRouter(closeChan)
 	for {
 		select {
 
@@ -147,6 +241,10 @@ func (c *Channel) MessagePump(closeChan chan struct{}) {
 		//监听closeChan,收到关闭消息
 		case <-closeChan:
 			return
+		}
+
+		if msg != nil {
+			c.inFlightMessageChan <- msg
 		}
 
 		c.clientMessageChan <- msg

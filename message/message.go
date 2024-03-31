@@ -1,12 +1,22 @@
 package message
 
 type Message struct {
-	data []byte
+	data       []byte
+	finishChan chan struct{}
 }
 
 func NewMessage(data []byte) *Message {
 	return &Message{
-		data: data,
+		data:       data,
+		finishChan: make(chan struct{}),
+	}
+}
+
+func (m *Message) EndTimer() {
+	select {
+	case m.finishChan <- struct{}{}:
+	default:
+
 	}
 }
 
