@@ -36,6 +36,25 @@ type Channel struct {
 	requeueMessageChan chan util.ChanReq
 }
 
+func NewChannel(name string, inMemSize int) *Channel {
+	channel := &Channel{
+		name:                name,
+		addClientChan:       make(chan util.ChanReq),
+		removeClientChan:    make(chan util.ChanReq),
+		clients:             make([]Consumer, 0, 5),
+		incomingMessageChan: make(chan *Message, 5),
+		msgChan:             make(chan *Message, inMemSize),
+		clientMessageChan:   make(chan *Message),
+		exitChan:            make(chan util.ChanReq),
+		inFlightMessageChan: make(chan *Message),
+		inFlightMessages:    make(map[string]*Message),
+		requeueMessageChan:  make(chan util.ChanReq),
+		finishMessageChan:   make(chan util.ChanReq),
+	}
+	go channel.Router()
+	return channel
+}
+
 func (c *Channel) Close() error {
 	errChan := make(chan interface{})
 	c.exitChan <- util.ChanReq{
