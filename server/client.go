@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/binary"
+	"gmq/protocol"
 	"io"
 	"log"
 )
@@ -54,4 +55,14 @@ func (c *Client) Write(data []byte) (int, error) {
 func (c *Client) Close() {
 	log.Printf("CLIENT(%s):closing", c.String())
 	c.conn.Close()
+}
+
+func (c *Client) Handle() {
+	defer c.Close()
+	proto := &protocol.Protocol{}
+	err := proto.IOLoop(c)
+	if err != nil {
+		log.Printf("ERROR: client(%s) - %s", c.String(), err.Error())
+		return
+	}
 }

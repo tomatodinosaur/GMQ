@@ -1,6 +1,7 @@
 package message
 
 import (
+	"gmq/queue"
 	"gmq/util"
 	"log"
 )
@@ -30,6 +31,7 @@ type Topic struct {
 	exitChan chan util.ChanReq
 	//是否已向channel发送消息
 	channelWriteStarted bool
+	backend             queue.Queue
 }
 
 var (
@@ -49,6 +51,7 @@ func NewTopic(name string, inMemSize int) *Topic {
 		readSyncChan:        make(chan struct{}),
 		routerSyncChan:      make(chan struct{}),
 		exitChan:            make(chan util.ChanReq),
+		backend:             queue.NewDiskQueue(name),
 	}
 	go topic.Router(inMemSize)
 	return topic
@@ -120,6 +123,11 @@ func (t *Topic) Router(inMemSize int) {
 			case t.msgChan <- msg:
 				log.Printf("TOPIC(%s) wrote message", t.name)
 			default:
+				err := t.backend.Put(msg.data)
+				if err != nil {
+					log.Printf("ERROR: t.backend.Put() - %s", err.Error())
+				}
+				log.Printf("TOPIC(%s): wrote to backend", t.name)
 			}
 
 		case <-t.readSyncChan:
@@ -134,7 +142,7 @@ func (t *Topic) Router(inMemSize int) {
 				}
 			}
 			close(closeChan)
-			closeReq.RetChan <- nil
+			closeReq.RetChan <- t.backend.Close()
 		}
 	}
 }
@@ -150,6 +158,13 @@ func (t *Topic) MessagePump(closeChan <-chan struct{}) {
 	for {
 		select {
 		case msg = <-t.msgChan:
+		case <-t.backend.ReadReadyChan():
+			bytes, err := t.backend.Get()
+			if err != nil {
+				log.Printf("ERROR: t.backend.Get() - %s", err.Error())
+				continue
+			}
+			msg = NewMessage(bytes)
 		case <-closeChan:
 			return
 		}

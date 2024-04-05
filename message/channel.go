@@ -2,6 +2,7 @@ package message
 
 import (
 	"errors"
+	"gmq/queue"
 	"gmq/util"
 	"log"
 	"time"
@@ -34,6 +35,7 @@ type Channel struct {
 	finishMessageChan   chan util.ChanReq
 
 	requeueMessageChan chan util.ChanReq
+	backend            queue.Queue
 }
 
 func NewChannel(name string, inMemSize int) *Channel {
@@ -50,6 +52,7 @@ func NewChannel(name string, inMemSize int) *Channel {
 		inFlightMessages:    make(map[string]*Message),
 		requeueMessageChan:  make(chan util.ChanReq),
 		finishMessageChan:   make(chan util.ChanReq),
+		backend:             queue.NewDiskQueue(name),
 	}
 	go channel.Router()
 	return channel
@@ -227,8 +230,13 @@ func (c *Channel) Router() {
 			select {
 			case c.msgChan <- msg:
 				log.Printf("CHANNEL(%s) wrote message", c.name)
-			//msgChan缓冲填满直接丢弃
+			//msgChan缓冲填满则充入磁盘后备队列
 			default:
+				err := c.backend.Put(msg.data)
+				if err != nil {
+					log.Printf("ERROR: c.backend.Put() - %s", err.Error())
+				}
+				log.Printf("CHANNEL(%s): wrote to backend", c.name)
 			}
 
 		//监听到channel关闭的消息
@@ -243,7 +251,7 @@ func (c *Channel) Router() {
 			}
 
 			//通知关闭结束且无错误
-			closeReq.RetChan <- nil
+			closeReq.RetChan <- c.backend.Close()
 		}
 	}
 }
@@ -256,6 +264,13 @@ func (c *Channel) MessagePump(closeChan chan struct{}) {
 	for {
 		select {
 		case msg = <-c.msgChan:
+		case <-c.backend.ReadReadyChan():
+			buf, err := c.backend.Get()
+			if err != nil {
+				log.Printf("ERROR: c.backend.Get() - %s", err.Error())
+				continue
+			}
+			msg = NewMessage(buf)
 
 		//监听closeChan,收到关闭消息
 		case <-closeChan:
