@@ -1,6 +1,7 @@
 package util
 
 import (
+	"context"
 	"crypto/rand"
 	"fmt"
 	"io"
@@ -11,9 +12,14 @@ import (
 
 var UuidChan = make(chan []byte, 1000)
 
-func UuidFactory() {
+func UuidFactory(ctx context.Context) {
 	for {
-		UuidChan <- uuid()
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			UuidChan <- uuid()
+		}
 	}
 }
 

@@ -162,6 +162,10 @@ func (c *Channel) RequeueRouter(closeChan chan struct{}) {
 				case <-msg.finishChan:
 					return
 				}
+				err := c.RequeueMessage(util.UuidToStr(msg.Uuid()))
+				if err != nil {
+					log.Printf("ERROR: channel(%s) - %s", c.name, err.Error())
+				}
 			}(msg)
 
 		case finishReq := <-c.finishMessageChan:
@@ -243,8 +247,7 @@ func (c *Channel) Router() {
 		case closeReq := <-c.exitChan:
 			log.Printf("CHANNEL(%s) is closing", c.name)
 			//停掉MessagePump
-			// close(closeChan)
-			closeChan <- struct{}{}
+			close(closeChan)
 
 			for _, consumer := range c.clients {
 				consumer.Close()

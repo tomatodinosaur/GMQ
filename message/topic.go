@@ -1,6 +1,7 @@
 package message
 
 import (
+	"context"
 	"gmq/queue"
 	"gmq/util"
 	"log"
@@ -69,7 +70,7 @@ func GetTopic(name string) *Topic {
 	return (<-topicChan).(*Topic)
 }
 
-func TopicFactory(inMemSize int) {
+func TopicFactory(ctx context.Context, inMemSize int) {
 	var (
 		topicReq util.ChanReq
 		name     string
@@ -77,16 +78,19 @@ func TopicFactory(inMemSize int) {
 		ok       bool
 	)
 	for {
-		//从待生产Topic任务队列取出任务，若不存在，则生产
-		topicReq = <-newTopicChan
-		name = topicReq.Variable.(string)
-		if topic, ok = TopicMap[name]; !ok {
-			topic = NewTopic(name, inMemSize)
-			TopicMap[name] = topic
-			log.Printf("TOPIC %s CREATED", name)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			topicReq = <-newTopicChan
+			name = topicReq.Variable.(string)
+			if topic, ok = TopicMap[name]; !ok {
+				topic = NewTopic(name, inMemSize)
+				TopicMap[name] = topic
+				log.Printf("TOPIC %s CREATED", name)
+			}
+			topicReq.RetChan <- topic
 		}
-		//返回给请求Topic线程
-		topicReq.RetChan <- topic
 	}
 }
 
